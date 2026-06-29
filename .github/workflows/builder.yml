@@ -3,13 +3,13 @@ name: Build and Release Bento4
 on:
   schedule:
     - cron: '0 */6 * * *' # Checks for new commits every 6 hours
-  workflow_dispatch: # Allows you to trigger the build manually whenever you want
+  workflow_dispatch:
 
 permissions:
-  contents: write # Required to create and upload assets to GitHub Releases
+  contents: write
 
 jobs:
-  check_upstream: # Changed from check-upstream to check_upstream
+  check_upstream:
     runs-on: ubuntu-latest
     outputs:
       should_build: ${{ steps.compare.outputs.should_build }}
@@ -45,7 +45,7 @@ jobs:
           fi
 
   build:
-    needs: check_upstream # Updated reference
+    needs: check_upstream
     if: needs.check_upstream.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
     name: Bento4 Build ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -68,12 +68,12 @@ jobs:
 
     steps:
       - name: Checkout upstream Bento4
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: axiomatic-systems/Bento4
           ref: ${{ needs.check_upstream.outputs.latest_sha }} # Updated reference
 
-      - name: Release Build with CMake (Official Config)
+      - name: Build
         run: |
           mkdir cmakebuild
           cd cmakebuild
@@ -82,23 +82,23 @@ jobs:
           cmake ${{ matrix.CMAKE_OPTIONS }} ../..
           cmake --build . --config Release
 
-      - name: Create SDK Package
+      - name: Create SDK package
         run: ${{ matrix.PYTHON3_COMMAND }} Scripts/SdkPackager.py
         
-      - name: Upload SDK Artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload SDK artifact
+        uses: actions/upload-artifact@v7
         with:
           name: bento4-sdk-${{ matrix.os }}
           path: SDK/*.zip
           if-no-files-found: error
 
   create-release:
-    needs: [check_upstream, build] # Updated reference
+    needs: [check_upstream, build]
     if: needs.check_upstream.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Download all SDK packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: sdk_artifacts
 
@@ -114,14 +114,14 @@ jobs:
           mkdir release_assets
           find sdk_artifacts/ -name "*.zip" -exec cp {} release_assets/ \;
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.vars.outputs.tag }}
           name: Bento4 Build - ${{ steps.vars.outputs.date }} (${{ steps.vars.outputs.tag }})
           body: |
-            Automated compilation using Bento4's official SDK packager.
-            Upstream Commit: https://github.com/axiomatic-systems/Bento4/commit/${{ needs.check_upstream.outputs.latest_sha }}
+            Automated master builds of Bento4.
+            Commit: https://github.com/axiomatic-systems/Bento4/commit/${{ needs.check_upstream.outputs.latest_sha }}
           draft: false
           prerelease: false
           files: release_assets/*
