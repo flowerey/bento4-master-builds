@@ -1,0 +1,129 @@
+name: Build and Release Bento4
+
+on:
+  schedule:
+    - cron: '0 */6 * * *' # Checks for new commits every 6 hours
+  workflow_dispatch: # Allows you to trigger the build manually whenever you want
+
+permissions:
+  contents: write # Required to create and upload assets to GitHub Releases
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.compare.outputs.should_build }}
+      latest_sha: ${{ steps.upstream.outputs.sha }}
+    steps:
+      - name: Get latest upstream commit SHA
+        id: upstream
+        run: |
+          SHA=$(curl -s "https://api.github.com/repos/axiomatic-systems/Bento4/commits/master" | jq -r '.sha')
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+
+      - name: Get latest release tag from this repo
+        id: local
+        run: |
+          LATEST_RELEASE=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases/latest" | jq -r '.tag_name' || echo "none")
+          if [ "$LATEST_RELEASE" = "null" ] || [ -z "$LATEST_RELEASE" ]; then
+            LATEST_RELEASE="none"
+          fi
+          echo "latest_release=$LATEST_RELEASE" >> $GITHUB_OUTPUT
+
+      - name: Compare SHAs
+        id: compare
+        run: |
+          UPSTREAM_SHA="${{ steps.upstream.outputs.sha }}"
+          SHORT_SHA="${UPSTREAM_SHA:0:7}"
+          
+          if [ "${{ steps.local.outputs.latest_release }}" != "$SHORT_SHA" ]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "New commit found: $SHORT_SHA. Initiating native cross-platform builds."
+          else
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "No new updates found."
+          fi
+
+  build:
+    needs: check-upstream
+    if: needs:check-upstream.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
+    name: Bento4 Build ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: ['ubuntu-latest', 'macos-latest', 'windows-latest']
+        include:
+          - os: ubuntu-latest
+            CMAKE_OPTIONS: -DCMAKE_BUILD_TYPE=Release
+            CMAKE_OUTPUT_SUBDIR: x86_64-unknown-linux
+            PYTHON3_COMMAND: python3  
+          - os: macos-latest
+            CMAKE_OPTIONS: -G Xcode
+            CMAKE_OUTPUT_SUBDIR: universal-apple-macosx
+            PYTHON3_COMMAND: python3  
+          - os: windows-latest
+            CMAKE_OPTIONS: -DCMAKE_BUILD_TYPE=Release
+            CMAKE_OUTPUT_SUBDIR: x86_64-microsoft-win32
+            PYTHON3_COMMAND: py  
+
+    steps:
+      - name: Checkout upstream Bento4
+        uses: actions/checkout@v4
+        with:
+          repository: axiomatic-systems/Bento4
+          ref: ${{ needs:check-upstream.outputs.latest_sha }}
+
+      - name: Release Build with CMake (Official Config)
+        run: |
+          mkdir cmakebuild
+          cd cmakebuild
+          mkdir ${{ matrix.CMAKE_OUTPUT_SUBDIR }}
+          cd ${{ matrix.CMAKE_OUTPUT_SUBDIR }}
+          cmake ${{ matrix.CMAKE_OPTIONS }} ../..
+          cmake --build . --config Release
+
+      - name: Create SDK Package
+        run: ${{ matrix.PYTHON3_COMMAND }} Scripts/SdkPackager.py
+        
+      - name: Upload SDK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bento4-sdk-${{ matrix.os }}
+          path: SDK/*.zip
+          if-no-files-found: error
+
+  create-release:
+    needs: [check-upstream, build]
+    if: needs:check-upstream.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all SDK packages
+        uses: actions/download-artifact@v4
+        with:
+          path: sdk_artifacts
+
+      - name: Set up release variables
+        id: vars
+        run: |
+          UPSTREAM_SHA="${{ needs:check-upstream.outputs.latest_sha }}"
+          echo "tag=${UPSTREAM_SHA:0:7}" >> $GITHUB_OUTPUT
+          echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+      - name: Flatten artifact paths
+        run: |
+          mkdir release_assets
+          find sdk_artifacts/ -name "*.zip" -exec cp {} release_assets/ \;
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          name: Bento4 Build - ${{ steps.vars.outputs.date }} (${{ steps.vars.outputs.tag }})
+          body: |
+            Automated compilation using Bento4's official SDK packager.
+            Upstream Commit: https://github.com/axiomatic-systems/Bento4/commit/${{ needs:check-upstream.outputs.latest_sha }}
+          draft: false
+          prerelease: false
+          files: release_assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
