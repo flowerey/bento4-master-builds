@@ -2,7 +2,7 @@ name: Build and Release Bento4
 
 on:
   schedule:
-    - cron: '0 */6 * * *' # Checks for new commits every 6 hours
+    - cron: '0 0 * * *'
   workflow_dispatch:
 
 permissions:
@@ -41,7 +41,7 @@ jobs:
             echo "New commit found: $SHORT_SHA. Initiating native cross-platform builds."
           else
             echo "should_build=false" >> $GITHUB_OUTPUT
-            echo "No new updates found."
+            echo "No new updates found ($SHORT_SHA is already built). Exiting cleanly."
           fi
 
   build:
@@ -71,7 +71,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: axiomatic-systems/Bento4
-          ref: ${{ needs.check_upstream.outputs.latest_sha }} # Updated reference
+          ref: ${{ needs.check_upstream.outputs.latest_sha }}
 
       - name: Build
         run: |
@@ -94,7 +94,7 @@ jobs:
 
   create-release:
     needs: [check_upstream, build]
-    if: needs.check_upstream.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
+    if: always() && needs.check_upstream.result == 'success' && (needs.check_upstream.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch') && (needs.build.result == 'success' || needs.build.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - name: Download all SDK packages
@@ -105,7 +105,7 @@ jobs:
       - name: Set up release variables
         id: vars
         run: |
-          UPSTREAM_SHA="${{ needs.check_upstream.outputs.latest_sha }}" # Updated reference
+          UPSTREAM_SHA="${{ needs.check_upstream.outputs.latest_sha }}"
           echo "tag=${UPSTREAM_SHA:0:7}" >> $GITHUB_OUTPUT
           echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
 
